@@ -111,7 +111,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-        // Environment variables managed cleanly through local .env / Vite config
+        // Environment variables managed cleanly through local .env / Netlify config
         const firebaseConfig = {
             apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
             authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -132,43 +132,57 @@
         // 🎵 CONTINUOUS RADIO SYNC PLAYLIST SYSTEM
         // ==========================================
         const radioPlaylist = [
-            "https://ik.imagekit.io/RealPaddi/ElevenLabs_2026-06-16T10_17_18_Alice%20-%20Clear,%20Engaging%20Educator_pre_sp100_s50_sb75_se0_b_m2.mp3",
-            "https://ik.imagekit.io/RealPaddi/mnikjlm.mp3"
+            { src: "https://ik.imagekit.io/RealPaddi/mnikjlm.mp3?updatedAt=1781720055074", duration: 44 },
+            { src: "https://ik.imagekit.io/RealPaddi/updates%20pst%20ben.mp3?updatedAt=1782037041748", duration: 72 },
+            { src: "https://ik.imagekit.io/RealPaddi/choir%20ministration%20drama.mp3?updatedAt=1781544498226", duration: 421 },
+            { src: "https://ik.imagekit.io/RealPaddi/bro%20ay%203.mp3", duration: 184 },
+            { src: "https://ik.imagekit.io/RealPaddi/bro%20ay%202%20mini.mp3", duration: 122 },
+            { src: "https://ik.imagekit.io/RealPaddi/choir%20ministartion.mp3?updatedAt=1781544321920", duration: 251 },
+            { src: "https://ik.imagekit.io/RealPaddi/Bro%20ay%20(mp3.)praise%20and%20worship.mp3?updatedAt=1782037168147", duration: 452 },
+            { src: "https://ik.imagekit.io/RealPaddi/PST%20Ben%2008.mp3?updatedAt=1781544756829", duration: 409 },
+            { src: "https://ik.imagekit.io/RealPaddi/pst%20ben.mp3?updatedAt=1781544812674", duration: 326 },
+            { src: "https://ik.imagekit.io/RealPaddi/State%20Coordinator%20Ministration.mp3?updatedAt=1781544140948", duration: 512 }
         ];
         
         const BROADCAST_EPOCH = new Date("2026-01-01T00:00:00Z").getTime();
-        const ASSUMED_TRACK_DURATION = 180; 
+        const TOTAL_PLAYLIST_DURATION = radioPlaylist.reduce((total, track) => total + track.duration, 0);
 
         function syncRadioPlayback() {
             if (radioPlaylist.length === 0 || isAgoraLive) return;
 
-            let duration = archivePlayer.duration;
-            if (!duration || isNaN(duration)) {
-                duration = ASSUMED_TRACK_DURATION;
-                archivePlayer.addEventListener('loadedmetadata', syncRadioPlayback, { once: true });
+            const totalElapsedSeconds = Math.floor((Date.now() - BROADCAST_EPOCH) / 1000);
+            const currentCycleRemainder = totalElapsedSeconds % TOTAL_PLAYLIST_DURATION;
+            
+            let accumulatedTime = 0;
+            let currentTrackIdx = 0;
+            let targetedTrackTimestamp = 0;
+
+            for (let i = 0; i < radioPlaylist.length; i++) {
+                if (currentCycleRemainder >= accumulatedTime && currentCycleRemainder < accumulatedTime + radioPlaylist[i].duration) {
+                    currentTrackIdx = i;
+                    targetedTrackTimestamp = currentCycleRemainder - accumulatedTime;
+                    break;
+                }
+                accumulatedTime += radioPlaylist[i].duration;
             }
 
-            const totalElapsedSeconds = Math.floor((Date.now() - BROADCAST_EPOCH) / 1000);
-            const totalPlaylistDuration = duration * radioPlaylist.length;
-            const currentCycleRemainder = totalElapsedSeconds % totalPlaylistDuration;
-            
-            const currentTrackIdx = Math.floor(currentCycleRemainder / duration);
-            const targetedTrackTimestamp = currentCycleRemainder % duration;
+            const currentTrack = radioPlaylist[currentTrackIdx];
 
-            if (archivePlayer.src !== radioPlaylist[currentTrackIdx]) {
-                archivePlayer.src = radioPlaylist[currentTrackIdx];
+            if (archivePlayer.src !== currentTrack.src) {
+                archivePlayer.src = currentTrack.src;
                 archivePlayer.load();
             }
 
-            archivePlayer.currentTime = targetedTrackTimestamp;
+            if (Math.abs(archivePlayer.currentTime - targetedTrackTimestamp) > 2) {
+                archivePlayer.currentTime = targetedTrackTimestamp;
+            }
             
             if (joinBtn.classList.contains('hidden') && !isAgoraLive) {
                 archivePlayer.play().catch(e => console.log("Audio sync catchup buffered."));
             }
         }
 
-        archivePlayer.src = radioPlaylist[0];
-        archivePlayer.load();
+        syncRadioPlayback();
 
         archivePlayer.addEventListener('ended', () => {
             if (!isAgoraLive) {
@@ -284,7 +298,6 @@
             fallbackText.innerText = "STREAM WAVEFORM ACTIVE";
         }
 
-        // Real-Time Stats Tracking Routine Loop
         function startTrackingListeners() {
             if (counterIntervalId) clearInterval(counterIntervalId);
             
@@ -294,7 +307,6 @@
             counterIntervalId = setInterval(async () => {
                 try {
                     const stats = rtcClient.getRTCStats();
-                    // User count metrics calculated by total remote channel peers + the user's client build wrapper
                     const totalActiveListeners = (stats.UserCount || 0) + 1;
                     counterElement.innerText = `${totalActiveListeners} Listening`;
                 } catch (e) {

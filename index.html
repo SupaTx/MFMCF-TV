@@ -80,7 +80,7 @@
             </div>
 
             <div class="w-full mb-5">
-                <button id="join-btn" class="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-extrabold py-3.5 px-4 rounded-xl transition-all duration-300 tracking-widest text-xs shadow-[0_4px_20px_rgba(147,51,234,0.3)] hover:shadow-[0_4px_25px_rgba(147,51,234,0.45)] cursor-pointer flex items-center justify-center gap-2 uppercase border border-purple-400/20 disabled:cursor-not-allowed">
+                <button id="join-btn" class="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-extrabold py-3.5 px-4 rounded-xl transition-all duration-300 tracking-widest text-xs shadow-[0_4px_20px_rgba(147,51,234,0.3)] hover:shadow-[0_4px_25px_rgba(147,51,234,0.45)] cursor-pointer flex items-center justify-center gap-2 uppercase border border-purple-400/20">
                     <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                     Listen Live
                 </button>
@@ -109,46 +109,87 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, doc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-        // Environment variables managed cleanly through local .env / Netlify config
-        const firebaseConfig = {
-            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-            appId: import.meta.env.VITE_FIREBASE_APP_ID
-        };
+        // Global scoped app engines
+        let db;
+        let rtcClient = null;
+        let audioCtx;
+        let analyser;
+        let source;
+        let animationFrameId;
+        let isAgoraLive = false;
+        let counterIntervalId = null;
 
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
+        // Fetch UI Elements securely from DOM
         const chatBox = document.getElementById('chat-box');
         const chatForm = document.getElementById('chat-form');
         const programBanner = document.getElementById('program-banner');
         const archivePlayer = document.getElementById('archive-player');
+        const joinBtn = document.getElementById('join-btn');
+        const leaveBtn = document.getElementById('leave-btn');
+        const statusBadge = document.getElementById('status-badge');
+        const liveIndicator = document.getElementById('live-indicator');
+        const canvas = document.getElementById('visualizer-canvas');
+        const ctx = canvas.getContext('2d');
+        const fallbackText = document.getElementById('visualizer-fallback');
+        const badgeContainer = document.getElementById('listener-counter-badge');
+        const counterElement = document.getElementById('listener-count');
+
+        // Config credentials
+        const AGORA_APP_ID = import.meta.env.VITE_AGORA_APP_ID; 
+        const CHANNEL_NAME = import.meta.env.VITE_AGORA_CHANNEL_NAME; 
+        const STREAM_TOKEN = import.meta.env.VITE_AGORA_STREAM_TOKEN;
 
         // ==========================================
         // 🎵 CONTINUOUS RADIO SYNC PLAYLIST SYSTEM
         // ==========================================
+        // No longer hardcoded. browser dynamically looks up the exact length of each file.
         const radioPlaylist = [
-            { src: "https://ik.imagekit.io/RealPaddi/mnikjlm.mp3?updatedAt=1781720055074", duration: 44 },
-            { src: "https://ik.imagekit.io/RealPaddi/updates%20pst%20ben.mp3?updatedAt=1782037041748", duration: 72 },
-            { src: "https://ik.imagekit.io/RealPaddi/choir%20ministration%20drama.mp3?updatedAt=1781544498226", duration: 421 },
-            { src: "https://ik.imagekit.io/RealPaddi/bro%20ay%203.mp3", duration: 184 },
-            { src: "https://ik.imagekit.io/RealPaddi/bro%20ay%202%20mini.mp3", duration: 122 },
-            { src: "https://ik.imagekit.io/RealPaddi/choir%20ministartion.mp3?updatedAt=1781544321920", duration: 251 },
-            { src: "https://ik.imagekit.io/RealPaddi/Bro%20ay%20(mp3.)praise%20and%20worship.mp3?updatedAt=1782037168147", duration: 452 },
-            { src: "https://ik.imagekit.io/RealPaddi/PST%20Ben%2008.mp3?updatedAt=1781544756829", duration: 409 },
-            { src: "https://ik.imagekit.io/RealPaddi/pst%20ben.mp3?updatedAt=1781544812674", duration: 326 },
-            { src: "https://ik.imagekit.io/RealPaddi/State%20Coordinator%20Ministration.mp3?updatedAt=1781544140948", duration: 512 }
+            { src: "https://ik.imagekit.io/RealPaddi/mnikjlm.mp3?updatedAt=1781720055074" },
+            { src: "https://ik.imagekit.io/RealPaddi/updates%20pst%20ben.mp3?updatedAt=1782037041748" },
+            { src: "https://ik.imagekit.io/RealPaddi/choir%20ministration%20drama.mp3?updatedAt=1781544498226" },
+            { src: "https://ik.imagekit.io/RealPaddi/bro%20ay%203.mp3" },
+            { src: "https://ik.imagekit.io/RealPaddi/bro%20ay%202%20mini.mp3" },
+            { src: "https://ik.imagekit.io/RealPaddi/choir%20ministartion.mp3?updatedAt=1781544321920" },
+            { src: "https://ik.imagekit.io/RealPaddi/Bro%20ay%20(mp3.)praise%20and%20worship.mp3?updatedAt=1782037168147" },
+            { src: "https://ik.imagekit.io/RealPaddi/PST%20Ben%2008.mp3?updatedAt=1781544756829" },
+            { src: "https://ik.imagekit.io/RealPaddi/pst%20ben.mp3?updatedAt=1781544812674" },
+            { src: "https://ik.imagekit.io/RealPaddi/State%20Coordinator%20Ministration.mp3?updatedAt=1781544140948" }
         ];
         
         const BROADCAST_EPOCH = new Date("2026-01-01T00:00:00Z").getTime();
-        const TOTAL_PLAYLIST_DURATION = radioPlaylist.reduce((total, track) => total + track.duration, 0);
+        let TOTAL_PLAYLIST_DURATION = 0;
+
+        // Dynamic Meta-Loader: Automatically calculates true tracks timeline lengths
+        async function loadPlaylistDurations() {
+            console.log("Syncing radio timeline lengths...");
+            for (let track of radioPlaylist) {
+                try {
+                    track.duration = await new Promise((resolve) => {
+                        const tempAudio = new Audio(track.src);
+                        tempAudio.preload = "metadata";
+                        tempAudio.addEventListener("loadedmetadata", () => {
+                            resolve(Math.ceil(tempAudio.duration));
+                        });
+                        tempAudio.addEventListener("error", () => {
+                            resolve(180); // 3-min safe fallback
+                        });
+                    });
+                } catch (e) {
+                    track.duration = 180;
+                }
+            }
+            
+            TOTAL_PLAYLIST_DURATION = radioPlaylist.reduce((total, track) => total + track.duration, 0);
+            console.log(`Total loop calculation loaded: ${TOTAL_PLAYLIST_DURATION}s.`);
+            
+            // Trigger loop execution once lengths align
+            syncRadioPlayback();
+        }
 
         function syncRadioPlayback() {
-            if (radioPlaylist.length === 0 || isAgoraLive) return;
+            if (TOTAL_PLAYLIST_DURATION === 0 || radioPlaylist.length === 0 || isAgoraLive) return;
 
             const totalElapsedSeconds = Math.floor((Date.now() - BROADCAST_EPOCH) / 1000);
             const currentCycleRemainder = totalElapsedSeconds % TOTAL_PLAYLIST_DURATION;
@@ -177,88 +218,104 @@
                 archivePlayer.currentTime = targetedTrackTimestamp;
             }
             
-            if (joinBtn.classList.contains('hidden') && !isAgoraLive) {
-                archivePlayer.play().catch(e => console.log("Audio sync catchup buffered."));
+            if (joinBtn && joinBtn.classList.contains('hidden') && !isAgoraLive) {
+                archivePlayer.play().catch(e => console.log("Audio playback user gesture catchup deferred."));
             }
         }
 
-        syncRadioPlayback();
-
-        archivePlayer.addEventListener('ended', () => {
-            if (!isAgoraLive) {
-                syncRadioPlayback();
-            }
-        });
         // ==========================================
-
-        // FIREBASE BANNER SYNCHRONIZER
-        onSnapshot(doc(db, "banners", "current"), (docSnap) => {
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                if (data["bible study"]) {
-                    programBanner.src = data["bible study"];
-                }
-            }
-        });
-
-        const q = query(collection(db, "chat"), orderBy("timestamp", "asc"));
-        onSnapshot(q, (snapshot) => {
-            chatBox.innerHTML = '';
-            if (snapshot.empty) {
-                chatBox.innerHTML = `<div class="text-slate-400/50 text-center italic pt-6 px-4 leading-relaxed text-[10.5px]">You are tuned into MFMCF UNIOSUN CAMPUS Radio, broadcasting live 24/7 from the heart of our campus. Whether you are studying, relaxing, or walking to class, we are here to fuel your faith and connect you to a vibrant community of young believers. Stay locked in for uplifting worship, transformative word sessions, and authentic student conversations. This is your campus spiritual home, online every hour of every day.</div>`;
-            }
-            snapshot.forEach((doc) => {
-                const data = doc.data();
-                const msgEl = document.createElement('div');
-                msgEl.className = "bg-white/[0.02] px-3 py-2 rounded-xl border border-white/[0.04] leading-relaxed text-slate-300 shadow-xs max-w-[95%] mb-2 break-words";
-                msgEl.innerHTML = `<span class="font-extrabold text-purple-400 tracking-wide">${data.user || 'Anonymous'}</span> <span class="text-white/90 ml-1">${data.text}</span>`;
-                chatBox.appendChild(msgEl);
-            });
-            chatBox.scrollTop = chatBox.scrollHeight;
-        });
-
-        chatForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const uInput = document.getElementById('username');
-            const mInput = document.getElementById('message');
+        // 🛠️ SAFELY INITIALIZE ENTIRE WEB APP ON LOAD
+        // ==========================================
+        function initAppEngine() {
             try {
-                await addDoc(collection(db, "chat"), { user: uInput.value.trim(), text: mInput.value.trim(), timestamp: new Date() });
-                mInput.value = '';
-                chatBox.scrollTop = chatBox.scrollHeight;
-            } catch(err) { console.error(err); }
-        });
+                // 1. Setup Firebase safely
+                const firebaseConfig = {
+                    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+                    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+                    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+                    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+                    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+                    appId: import.meta.env.VITE_FIREBASE_APP_ID
+                };
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
 
-        // AGORA REAL-TIME CONNECTION ENGINE
-        let rtcClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-        
-        const AGORA_APP_ID = import.meta.env.VITE_AGORA_APP_ID; 
-        const CHANNEL_NAME = import.meta.env.VITE_AGORA_CHANNEL_NAME; 
-        const STREAM_TOKEN = import.meta.env.VITE_AGORA_STREAM_TOKEN;
+                // 2. Setup Agora safely from loaded window scope object
+                if (typeof AgoraRTC !== "undefined") {
+                    rtcClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+                } else {
+                    console.error("Agora Web SDK missing or blocked by extension.");
+                }
 
-        const joinBtn = document.getElementById('join-btn');
-        const leaveBtn = document.getElementById('leave-btn');
-        const statusBadge = document.getElementById('status-badge');
-        const liveIndicator = document.getElementById('live-indicator');
-        const canvas = document.getElementById('visualizer-canvas');
-        const ctx = canvas.getContext('2d');
-        const fallbackText = document.getElementById('visualizer-fallback');
-        
-        const badgeContainer = document.getElementById('listener-counter-badge');
-        const counterElement = document.getElementById('listener-count');
+                // 3. Connect UI listeners
+                if (joinBtn) joinBtn.addEventListener('click', joinStream);
+                if (leaveBtn) leaveBtn.addEventListener('click', leaveStream);
+                window.addEventListener('resize', resizeCanvas);
+                resizeCanvas();
 
-        let audioCtx;
-        let analyser;
-        let source;
-        let animationFrameId;
-        let isAgoraLive = false;
-        let counterIntervalId = null;
+                // 4. Load exact durations and sync timeline
+                loadPlaylistDurations();
+                archivePlayer.addEventListener('ended', () => {
+                    if (!isAgoraLive) syncRadioPlayback();
+                });
 
-        function resizeCanvas() {
-            canvas.width = canvas.parentElement.clientWidth;
-            canvas.height = canvas.parentElement.clientHeight;
+                // 5. Connect Active Firebase Real-time listeners
+                setupFirebaseListeners();
+
+            } catch (err) {
+                console.error("Critical Runtime System Breakout:", err);
+            }
         }
-        window.addEventListener('resize', resizeCanvas);
-        resizeCanvas();
+
+        function setupFirebaseListeners() {
+            if (!db) return;
+
+            onSnapshot(doc(db, "banners", "current"), (docSnap) => {
+                if (docSnap.exists() && programBanner) {
+                    const data = docSnap.data();
+                    if (data["bible study"]) programBanner.src = data["bible study"];
+                }
+            });
+
+            const q = query(collection(db, "chat"), orderBy("timestamp", "asc"));
+            onSnapshot(q, (snapshot) => {
+                if (!chatBox) return;
+                chatBox.innerHTML = '';
+                if (snapshot.empty) {
+                    chatBox.innerHTML = `<div class="text-slate-400/50 text-center italic pt-6 px-4 leading-relaxed text-[10.5px]">You are tuned into MFMCF UNIOSUN CAMPUS Radio, broadcasting live 24/7 from the heart of our campus. Whether you are studying, relaxing, or walking to class, we are here to fuel your faith and connect you to a vibrant community of young believers. Stay locked in for uplifting worship, transformative word sessions, and authentic student conversations. This is your campus spiritual home, online every hour of every day.</div>`;
+                }
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const msgEl = document.createElement('div');
+                    msgEl.className = "bg-white/[0.02] px-3 py-2 rounded-xl border border-white/[0.04] leading-relaxed text-slate-300 shadow-xs max-w-[95%] mb-2 break-words";
+                    msgEl.innerHTML = `<span class="font-extrabold text-purple-400 tracking-wide">${data.user || 'Anonymous'}</span> <span class="text-white/90 ml-1">${data.text}</span>`;
+                    chatBox.appendChild(msgEl);
+                });
+                chatBox.scrollTop = chatBox.scrollHeight;
+            });
+        }
+
+        if (chatForm) {
+            chatForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const uInput = document.getElementById('username');
+                const mInput = document.getElementById('message');
+                if (!uInput || !mInput || !db) return;
+                try {
+                    await addDoc(collection(db, "chat"), { user: uInput.value.trim(), text: mInput.value.trim(), timestamp: new Date() });
+                    mInput.value = '';
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                } catch(err) { console.error(err); }
+            });
+        }
+
+        // VISUALIZER CANVAS WAVE ENGINE
+        function resizeCanvas() {
+            if (canvas && canvas.parentElement) {
+                canvas.width = canvas.parentElement.clientWidth;
+                canvas.height = canvas.parentElement.clientHeight;
+            }
+        }
 
         function startVisualizer(streamSource) {
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
@@ -283,6 +340,7 @@
             function drawWaveform() {
                 animationFrameId = requestAnimationFrame(drawWaveform);
                 analyser.getByteFrequencyData(dataArray);
+                if (!ctx || !canvas) return;
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 const barWidth = (canvas.width / bufferLength) * 1.8;
                 let barHeight;
@@ -295,11 +353,12 @@
                 }
             }
             drawWaveform();
-            fallbackText.innerText = "STREAM WAVEFORM ACTIVE";
+            if (fallbackText) fallbackText.innerText = "STREAM WAVEFORM ACTIVE";
         }
 
         function startTrackingListeners() {
             if (counterIntervalId) clearInterval(counterIntervalId);
+            if (!badgeContainer || !counterElement || !rtcClient) return;
             
             badgeContainer.classList.remove('hidden');
             badgeContainer.classList.add('flex');
@@ -310,7 +369,7 @@
                     const totalActiveListeners = (stats.UserCount || 0) + 1;
                     counterElement.innerText = `${totalActiveListeners} Listening`;
                 } catch (e) {
-                    console.log("Telemetry stats gathering buffered.");
+                    console.log("Telemetry aggregation loop refresh buffered.");
                 }
             }, 3000);
         }
@@ -320,17 +379,20 @@
                 clearInterval(counterIntervalId);
                 counterIntervalId = null;
             }
-            badgeContainer.classList.remove('flex');
-            badgeContainer.classList.add('hidden');
+            if (badgeContainer) {
+                badgeContainer.classList.remove('flex');
+                badgeContainer.classList.add('hidden');
+            }
         }
 
         async function joinStream() {
+            if (!rtcClient) return;
             try {
                 joinBtn.disabled = true;
                 joinBtn.innerText = "Connecting...";
                 joinBtn.className = "w-full bg-slate-800 text-slate-400 font-extrabold py-3.5 px-4 rounded-xl tracking-widest text-xs shadow-md flex items-center justify-center gap-2 uppercase border border-white/[0.05] cursor-not-allowed";
 
-                statusBadge.innerText = "CONNECTING...";
+                if (statusBadge) statusBadge.innerText = "CONNECTING...";
 
                 await rtcClient.join(AGORA_APP_ID, CHANNEL_NAME, STREAM_TOKEN, null);
                 startTrackingListeners();
@@ -339,13 +401,15 @@
                     await rtcClient.subscribe(user, mediaType);
                     if (mediaType === "audio") {
                         isAgoraLive = true;
-                        archivePlayer.pause(); 
+                        if (archivePlayer) archivePlayer.pause(); 
                         user.audioTrack.play(); 
                         startVisualizer(user.audioTrack.getMediaStreamTrack());
                         
-                        statusBadge.innerText = "LIVE SERVICE";
-                        statusBadge.className = "text-[9px] font-black tracking-widest text-emerald-400 uppercase";
-                        liveIndicator.className = "w-2 h-2 bg-emerald-400 rounded-full shadow-[0_0_8px_#34d399] animate-ping";
+                        if (statusBadge) {
+                            statusBadge.innerText = "LIVE SERVICE";
+                            statusBadge.className = "text-[9px] font-black tracking-widest text-emerald-400 uppercase";
+                        }
+                        if (liveIndicator) liveIndicator.className = "w-2 h-2 bg-emerald-400 rounded-full shadow-[0_0_8px_#34d399] animate-ping";
                     }
                 });
 
@@ -354,12 +418,14 @@
                         isAgoraLive = false;
                         syncRadioPlayback();
                         if (animationFrameId) cancelAnimationFrame(animationFrameId);
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                        fallbackText.innerText = "24/7 STREAM ACTIVE";
+                        if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        if (fallbackText) fallbackText.innerText = "24/7 STREAM ACTIVE";
                         
-                        statusBadge.innerText = "24/7 RADIO";
-                        statusBadge.className = "text-[9px] font-black tracking-widest text-purple-400 uppercase";
-                        liveIndicator.className = "w-2 h-2 bg-purple-400 rounded-full shadow-[0_0_8px_#c084fc] animate-pulse";
+                        if (statusBadge) {
+                            statusBadge.innerText = "24/7 RADIO";
+                            statusBadge.className = "text-[9px] font-black tracking-widest text-purple-400 uppercase";
+                        }
+                        if (liveIndicator) liveIndicator.className = "w-2 h-2 bg-purple-400 rounded-full shadow-[0_0_8px_#c084fc] animate-pulse";
                     }
                 });
 
@@ -367,50 +433,58 @@
                     if (!isAgoraLive) {
                         syncRadioPlayback();
                         if (animationFrameId) cancelAnimationFrame(animationFrameId);
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                        fallbackText.innerText = "24/7 STREAM ACTIVE";
+                        if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        if (fallbackText) fallbackText.innerText = "24/7 STREAM ACTIVE";
                         
-                        statusBadge.innerText = "24/7 RADIO";
-                        statusBadge.className = "text-[9px] font-black tracking-widest text-purple-400 uppercase";
-                        liveIndicator.className = "w-2 h-2 bg-purple-400 rounded-full shadow-[0_0_8px_#c084fc] animate-pulse";
+                        if (statusBadge) {
+                            statusBadge.innerText = "24/7 RADIO";
+                            statusBadge.className = "text-[9px] font-black tracking-widest text-purple-400 uppercase";
+                        }
+                        if (liveIndicator) liveIndicator.className = "w-2 h-2 bg-purple-400 rounded-full shadow-[0_0_8px_#c084fc] animate-pulse";
                     }
                 }, 2200);
 
-                joinBtn.classList.add('hidden');
-                leaveBtn.classList.remove('hidden');
+                if (joinBtn) joinBtn.classList.add('hidden');
+                if (leaveBtn) leaveBtn.classList.remove('hidden');
             } catch (error) {
                 console.error("Connection Error:", error);
-                statusBadge.innerText = "OFF-AIR";
+                if (statusBadge) statusBadge.innerText = "OFF-AIR";
                 stopTrackingListeners();
-                joinBtn.disabled = false;
-                joinBtn.innerText = "Listen Live";
-                joinBtn.className = "w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-extrabold py-3.5 px-4 rounded-xl transition-all tracking-widest text-xs shadow-lg cursor-pointer flex items-center justify-center gap-2 uppercase border border-purple-500/20";
+                if (joinBtn) {
+                    joinBtn.disabled = false;
+                    joinBtn.innerText = "Listen Live";
+                    joinBtn.className = "w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-extrabold py-3.5 px-4 rounded-xl transition-all tracking-widest text-xs shadow-lg cursor-pointer flex items-center justify-center gap-2 uppercase border border-purple-500/20";
+                }
             }
         }
 
         async function leaveStream() {
+            if (!rtcClient) return;
             stopTrackingListeners();
             await rtcClient.leave();
-            archivePlayer.pause();
+            if (archivePlayer) archivePlayer.pause();
             isAgoraLive = false;
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
             if (audioCtx) audioCtx.close().catch(() => {});
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            joinBtn.disabled = false;
-            joinBtn.innerText = "Listen Live";
-            joinBtn.className = "w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-extrabold py-3.5 px-4 rounded-xl transition-all tracking-widest text-xs shadow-lg cursor-pointer flex items-center justify-center gap-2 uppercase border border-purple-500/20";
-
-            joinBtn.classList.remove('hidden');
-            leaveBtn.classList.add('hidden');
-            statusBadge.innerText = "OFF-AIR";
-            statusBadge.className = "text-[9px] font-black tracking-widest text-slate-400 uppercase";
-            liveIndicator.className = "w-2 h-2 bg-slate-500 rounded-full shadow-none";
-            fallbackText.innerText = "WAVEFORM INACTIVE";
+            if (joinBtn) {
+                joinBtn.disabled = false;
+                joinBtn.innerText = "Listen Live";
+                joinBtn.className = "w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-extrabold py-3.5 px-4 rounded-xl transition-all tracking-widest text-xs shadow-lg cursor-pointer flex items-center justify-center gap-2 uppercase border border-purple-500/20";
+                joinBtn.classList.remove('hidden');
+            }
+            if (leaveBtn) leaveBtn.classList.add('hidden');
+            if (statusBadge) {
+                statusBadge.innerText = "OFF-AIR";
+                statusBadge.className = "text-[9px] font-black tracking-widest text-slate-400 uppercase";
+            }
+            if (liveIndicator) liveIndicator.className = "w-2 h-2 bg-slate-500 rounded-full shadow-none";
+            if (fallbackText) fallbackText.innerText = "WAVEFORM INACTIVE";
         }
 
-        joinBtn.addEventListener('click', joinStream);
-        leaveBtn.addEventListener('click', leaveStream);
+        // Fire off execution safely once elements exist
+        initAppEngine();
     </script>
 </body>
 </html>
